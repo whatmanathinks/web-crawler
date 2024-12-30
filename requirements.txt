@@ -1,0 +1,9 @@
+fastapi
+pydantic
+httpx
+asyncio
+openai
+playwright
+beautifulsoup4
+scrapy_playwright
+dotenv
