@@ -67,11 +67,7 @@ async def discover_product_urls(domains: List[str], crawler_type: str) -> Dict[s
                     "domain_product_urls": set(),
                     "visited_urls": set()
                 }
-                if crawler_type == "playwright":
-                    return await manage_crawling_playwright(client_or_browser, domain, product_url_patterns)
-                else:
-                    visited = set()
-                    return await crawl_page_beautifulsoup(client_or_browser, domain, domain, visited, product_url_patterns)
+                return await manage_crawling(client_or_browser, domain, product_url_patterns, crawler_type)
             except Exception as e:
                 logger.error(f"Error managing crawling for domain {domain}: {e}")
                 return set()
@@ -109,7 +105,7 @@ async def discover_product_urls(domains: List[str], crawler_type: str) -> Dict[s
     return url_data
 
 
-async def manage_crawling_playwright(browser, domain, product_url_patterns):
+async def manage_crawling(crawler, domain, product_url_patterns, crawler_type="playwright"):
     semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS_PER_DOMAIN)
     domain = domain.rstrip('/')
     lock = asyncio.Lock()
@@ -121,7 +117,10 @@ async def manage_crawling_playwright(browser, domain, product_url_patterns):
             async with lock:
                 url_data[domain]["visited_urls"].add(url)
                 url_data[domain]["urls_to_visit"].remove(url)
-            return await crawl_page_playwright(browser, domain, url, product_url_patterns, semaphore, lock)
+            if crawler_type == "playwright":
+                return await crawl_page_playwright(crawler, domain, url, product_url_patterns, semaphore, lock)
+            else:
+                return await crawl_page_beautifulsoup(crawler, url, domain, product_url_patterns, semaphore, lock)
 
         tasks = [visit_and_crawl(url) for url in current_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -131,6 +130,7 @@ async def manage_crawling_playwright(browser, domain, product_url_patterns):
                 logger.error(f"Error crawling URL: {result}")
 
     return list(url_data[domain]["domain_product_urls"])
+
 
 async def crawl_page_playwright(browser, domain, url, product_url_patterns, semaphore, lock):
     async with semaphore:
@@ -155,7 +155,7 @@ async def crawl_page_playwright(browser, domain, url, product_url_patterns, sema
             last_height = await page.evaluate("document.body.scrollHeight")
             for _ in range(max_scroll_attempts):
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
-                await page.wait_for_timeout(int(DOWNLOAD_DELAY))
+                await page.wait_for_timeout(int(DOWNLOAD_DELAY))  # Convert to milliseconds
                 new_height = await page.evaluate("document.body.scrollHeight")
                 if new_height == last_height:
                     break
@@ -166,21 +166,7 @@ async def crawl_page_playwright(browser, domain, url, product_url_patterns, sema
             logger.debug(f"Found hrefs: {hrefs}")
             
             cleaned_hrefs = await clean_and_filter_hrefs(hrefs, domain)
-
-            async with lock:
-                for href in cleaned_hrefs:
-                    if any(re.search(pattern, href) for pattern in product_url_patterns):
-                        href = href.split('?')[0]
-                        if href not in url_data[domain]["domain_product_urls"]:
-                            logger.info(f"Product URL found: {href}")
-                            url_data[domain]["domain_product_urls"].add(href)
-                    if href not in url_data[domain]["visited_urls"] and href not in url_data[domain]["urls_to_visit"]:
-                        logger.debug(f"Adding href to visit: {href}")
-                        url_data[domain]["urls_to_visit"].add(href)
-                        
-                logger.debug(f"Visited URLs: {url_data[domain]['visited_urls']}")
-                logger.debug(f"To be visited: {url_data[domain]['urls_to_visit']}")
-                logger.debug(f"Domain product URLs: {url_data[domain]['domain_product_urls']}")
+            await process_hrefs(cleaned_hrefs, domain, product_url_patterns, lock)
 
             logger.info(f"Finished crawl for URL: {url}.")
         except Exception as e:
@@ -189,29 +175,38 @@ async def crawl_page_playwright(browser, domain, url, product_url_patterns, sema
             if page:
                 await page.close()
 
-async def crawl_page_beautifulsoup(client, base_url, current_url, visited, product_url_patterns):
-    if current_url in visited:
-        logger.debug(f"URL already visited: {current_url}")
-        return set()
-    visited.add(current_url)
-    logger.info(f"Crawling URL: {current_url}")
-    page = await fetch_page(client, current_url)
-    if not page:
-        logger.warning(f"Failed to fetch page for URL: {current_url}")
-        return set()
+async def crawl_page_beautifulsoup(client, current_url, domain, product_url_patterns, semaphore, lock):
+    async with semaphore:
+       
 
-    soup = BeautifulSoup(page, 'html.parser')
-    links = soup.find_all('a', href=True)
-    hrefs = [link['href'] for link in links]
-    
-    cleaned_hrefs = await clean_and_filter_hrefs(hrefs, base_url)
+        logger.info(f"Crawling URL: {current_url}")
+        page = await fetch_page(client, current_url)
+        if not page:
+            logger.warning(f"Failed to fetch page for URL: {current_url}")
+            return
 
-    urls = set()
-    for href in cleaned_hrefs:
-        if any(re.search(pattern, href) for pattern in product_url_patterns):
-            logger.info(f"Product URL found: {href}")
-            urls.add(href)
-        if href not in visited:
-            urls.update(await crawl_page_beautifulsoup(client, base_url, href, visited, product_url_patterns))
+        soup = BeautifulSoup(page, 'html.parser')
+        links = soup.find_all('a', href=True)
+        hrefs = [link['href'] for link in links]
 
-    return urls
+        cleaned_hrefs = await clean_and_filter_hrefs(hrefs, domain)
+        url_data[domain]["visited_urls"].add(current_url)
+        await process_hrefs(cleaned_hrefs, domain, product_url_patterns, lock)
+
+
+
+async def process_hrefs(cleaned_hrefs, domain, product_url_patterns, lock):
+    async with lock:
+        for href in cleaned_hrefs:
+            if any(re.search(pattern, href) for pattern in product_url_patterns):
+                href = href.split('?')[0]
+                if href not in url_data[domain]["domain_product_urls"]:
+                    logger.info(f"Product URL found: {href}")
+                    url_data[domain]["domain_product_urls"].add(href)
+            if href not in url_data[domain]["visited_urls"] and href not in url_data[domain]["urls_to_visit"]:
+                logger.debug(f"Adding href to visit: {href}")
+                url_data[domain]["urls_to_visit"].add(href)
+
+        logger.debug(f"Visited URLs: {url_data[domain]['visited_urls']}")
+        logger.debug(f"To be visited: {url_data[domain]['urls_to_visit']}")
+        logger.debug(f"Domain product URLs: {url_data[domain]['domain_product_urls']}")

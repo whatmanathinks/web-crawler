@@ -4,7 +4,7 @@ import os
 CONCURRENT_REQUESTS = int(os.getenv("CONCURRENT_REQUESTS", 10))  # Maximum number of concurrent requests
 
 # Configuration for download delay
-DOWNLOAD_DELAY = float(os.getenv("DOWNLOAD_DELAY", 1.0))  # Delay between requests in seconds
+DOWNLOAD_DELAY = float(os.getenv("DOWNLOAD_DELAY", 100))  # Delay between requests in milliseconds
 
 # Configuration for concurrent requests per domain
 CONCURRENT_REQUESTS_PER_DOMAIN = int(os.getenv("CONCURRENT_REQUESTS_PER_DOMAIN", 5))  # Max concurrent requests per domain
@@ -18,7 +18,7 @@ PLAYWRIGHT_LAUNCH_OPTIONS = {
 }
 
 # Configuration for crawler method
-CRAWLER = os.getenv("CRAWLER", "playwright").lower()
+CRAWLER = os.getenv("CRAWLER", "beautifulsoup").lower()
 
 if CRAWLER not in ["playwright", "beautifulsoup"]:
     CRAWLER = "beautifulsoup"  #
